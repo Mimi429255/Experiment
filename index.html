@@ -1,0 +1,390 @@
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
+
+public class AstroLiveServer {
+
+   
+    private static final String APP_ID = 74dbbe57-084a-4908-b280-e817c10ea346;
+    private static final String APP_SECRET = 9f29194adaf0ca71cf5c2dfc26f59209c2982ce257cb97d1b0610ae34f;
+
+  
+    private static final double LATITUDE = 50.9375;
+    private static final double LONGITUDE = 6.9603;
+    private static final double ELEVATION = 50; // Meter
+
+    public static void main(String[] args) throws Exception {
+        int port = 8080;
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+
+        AstronomyApiClient astroClient = new AstronomyApiClient(APP_ID, APP_SECRET);
+
+        
+        server.createContext("/", new RootHandler());
+
+      
+        server.createContext("/api/planets", exchange -> {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            try {
+                String json = astroClient.fetchPlanetPositions(LATITUDE, LONGITUDE, ELEVATION);
+                byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
+                exchange.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(bytes);
+                }
+            } catch (Exception e) {
+                String err = "{\"error\":\"Fehler beim Abrufen der Planetenpositionen: " +
+                        e.getMessage().replace("\"", "'") + "\"}";
+                byte[] bytes = err.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
+                exchange.sendResponseHeaders(500, bytes.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+        });
+
+        
+        server.createContext("/api/constellations",
+                new JsonHandler("{\"status\":\"ok\",\"message\":\"TODO: Sternbilder-API anbinden\"}"));
+        server.createContext("/api/meteors",
+                new JsonHandler("{\"status\":\"ok\",\"message\":\"TODO: Meteorschauer-API anbinden\"}"));
+        server.createContext("/api/news",
+                new JsonHandler("{\"status\":\"ok\",\"message\":\"TODO: News-/Durchbruchs-API anbinden\"}"));
+
+        server.setExecutor(null);
+        System.out.println("AstroLiveServer läuft auf http://localhost:" + port);
+        server.start();
+    }
+
+   
+    static class RootHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+
+            String html = buildHtmlPage();
+            byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        }
+
+        private String buildHtmlPage() {
+            String now = LocalDateTime.now().toString();
+            return "<!DOCTYPE html>\n" +
+                    "<html lang=\"de\">\n" +
+                    "<head>\n" +
+                    "  <meta charset=\"UTF-8\" />\n" +
+                    "  <title>Live Astronomie Dashboard</title>\n" +
+                    "  <style>\n" +
+                    "    body { margin:0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;\n" +
+                    "           background: radial-gradient(circle at top, #050816 0, #02010a 60%, #000 100%);\n" +
+                    "           color:#f5f5f5; }\n" +
+                    "    header { padding:16px 24px; background:rgba(0,0,0,0.7); border-bottom:1px solid rgba(255,255,255,0.1);\n" +
+                    "             display:flex; justify-content:space-between; align-items:center; position:sticky; top:0;\n" +
+                    "             backdrop-filter:blur(10px); z-index:10; }\n" +
+                    "    header h1 { margin:0; font-size:1.4rem; letter-spacing:0.05em; }\n" +
+                    "    header span { font-size:0.8rem; opacity:0.8; }\n" +
+                    "    main { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1.4fr); gap:16px; padding:16px; }\n" +
+                    "    @media (max-width:900px){ main{ grid-template-columns:1fr; } }\n" +
+                    "    .card { background:rgba(10,10,25,0.9); border-radius:12px; border:1px solid rgba(255,255,255,0.06);\n" +
+                    "            padding:14px 16px; box-shadow:0 18px 45px rgba(0,0,0,0.6); }\n" +
+                    "    .card h2 { margin-top:0; font-size:1.1rem; margin-bottom:8px; }\n" +
+                    "    .card small { opacity:0.7; font-size:0.75rem; }\n" +
+                    "    #solarCanvas { width:100%; height:420px; background:radial-gradient(circle at center,#111827 0,#020617 60%,#000 100%);\n" +
+                    "                  border-radius:10px; border:1px solid rgba(148,163,184,0.4); display:block; }\n" +
+                    "    .info-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:8px; }\n" +
+                    "    .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;\n" +
+                    "            background:rgba(15,23,42,0.9); border:1px solid rgba(148,163,184,0.4); font-size:0.75rem; }\n" +
+                    "    .pill-dot { width:7px; height:7px; border-radius:999px; background:#22c55e; box-shadow:0 0 8px rgba(34,197,94,0.9); }\n" +
+                    "    .section-title { font-size:0.8rem; text-transform:uppercase; letter-spacing:0.12em; opacity:0.7; margin-bottom:4px; }\n" +
+                    "    .list { list-style:none; padding:0; margin:0; font-size:0.85rem; }\n" +
+                    "    .list li { padding:4px 0; border-bottom:1px dashed rgba(148,163,184,0.3); }\n" +
+                    "    .list li:last-child { border-bottom:none; }\n" +
+                    "    footer { text-align:center; font-size:0.75rem; opacity:0.6; padding:10px 0 16px; }\n" +
+                    "  </style>\n" +
+                    "</head>\n" +
+                    "<body>\n" +
+                    "  <header>\n" +
+                    "    <div>\n" +
+                    "      <h1>Live Astronomie Dashboard</h1>\n" +
+                    "      <span>Stand: " + now + " (Serverzeit)</span>\n" +
+                    "    </div>\n" +
+                    "    <div class=\"pill\">\n" +
+                    "      <span class=\"pill-dot\"></span>\n" +
+                    "      <span>Echte Planetenbahndaten (Astronomy API) – andere Bereiche noch im Aufbau</span>\n" +
+                    "    </div>\n" +
+                    "  </header>\n" +
+                    "  <main>\n" +
+                    "    <section class=\"card\">\n" +
+                    "      <h2>Sonnensystem – Live-Ansicht mit echten Bahndaten</h2>\n" +
+                    "      <small>Planetenpositionen werden über die Astronomy API geladen.</small>\n" +
+                    "      <canvas id=\"solarCanvas\"></canvas>\n" +
+                    "    </section>\n" +
+                    "    <section class=\"card\">\n" +
+                    "      <div class=\"section-title\">Überblick</div>\n" +
+                    "      <div class=\"info-grid\">\n" +
+                    "        <div>\n" +
+                    "          <h2>Planeten im Sonnensystem</h2>\n" +
+                    "          <ul class=\"list\" id=\"planetList\">\n" +
+                    "            <li>Lade Planetendaten …</li>\n" +
+                    "          </ul>\n" +
+                    "        </div>\n" +
+                    "        <div>\n" +
+                    "          <h2>Sternbilder am Standort</h2>\n" +
+                    "          <ul class=\"list\" id=\"constellationList\">\n" +
+                    "            <li>TODO: Sternbilder-API anbinden …</li>\n" +
+                    "          </ul>\n" +
+                    "        </div>\n" +
+                    "        <div>\n" +
+                    "          <h2>Meteorschauer & Sternschnuppen</h2>\n" +
+                    "          <ul class=\"list\" id=\"meteorList\">\n" +
+                    "            <li>TODO: Meteorschauer-API anbinden …</li>\n" +
+                    "          </ul>\n" +
+                    "        </div>\n" +
+                    "      </div>\n" +
+                    "      <div style=\"margin-top:12px;\">\n" +
+                    "        <h2>Aktuelle Durchbrüche & News</h2>\n" +
+                    "        <ul class=\"list\" id=\"newsList\">\n" +
+                    "          <li>TODO: News-/Durchbruchs-API anbinden …</li>\n" +
+                    "        </ul>\n" +
+                    "      </div>\n" +
+                    "    </section>\n" +
+                    "  </main>\n" +
+                    "  <footer>\n" +
+                    "    Demo-Prototyp in Java mit echter Planeten-API. Weitere Datenquellen kannst du Schritt für Schritt ergänzen.\n" +
+                    "  </footer>\n" +
+                    "\n" +
+                    "  <script>\n" +
+                    "    // ---------------- Canvas-Setup ----------------\n" +
+                    "    const canvas = document.getElementById('solarCanvas');\n" +
+                    "    const ctx = canvas.getContext('2d');\n" +
+                    "    let planets = [];\n" +
+                    "\n" +
+                    "    function resizeCanvas() {\n" +
+                    "      const rect = canvas.getBoundingClientRect();\n" +
+                    "      canvas.width = rect.width * window.devicePixelRatio;\n" +
+                    "      canvas.height = rect.height * window.devicePixelRatio;\n" +
+                    "      ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);\n" +
+                    "    }\n" +
+                    "    window.addEventListener('resize', resizeCanvas);\n" +
+                    "    resizeCanvas();\n" +
+                    "\n" +
+                    "    // ---------------- Planeten von Backend laden ----------------\n" +
+                    "    async function loadPlanets() {\n" +
+                    "      const list = document.getElementById('planetList');\n" +
+                    "      try {\n" +
+                    "        const res = await fetch('/api/planets');\n" +
+                    "        const data = await res.json();\n" +
+                    "        // Struktur hängt von der Astronomy-API-Response ab – hier ein typisches Beispiel\n" +
+                    "        // Du kannst die genaue Struktur in der Doku nachschauen und hier anpassen.\n" +
+                    "        planets = [];\n" +
+                    "        list.innerHTML = '';\n" +
+                    "\n" +
+                    "        if (data && data.data && data.data.table && data.data.table.rows) {\n" +
+                    "          data.data.table.rows.forEach(row => {\n" +
+                    "            const body = row.entry;\n" +
+                    "            const pos = row.cells[0].position; // typischer Aufbau: RA/Dec, Distanz etc.\n" +
+                    "            planets.push({\n" +
+                    "              name: body.name,\n" +
+                    "              // Für die Visualisierung mappen wir Distanz auf Radius\n" +
+                    "              radius: 40 + (planets.length * 25),\n" +
+                    "              size: 4 + (planets.length * 0.5),\n" +
+                    "              color: '#22c55e',\n" +
+                    "              // Dummy-Geschwindigkeit – echte Bahnparameter könntest du später genauer mappen\n" +
+                    "              speed: 0.01 + planets.length * 0.002\n" +
+                    "            });\n" +
+                    "\n" +
+                    "            const li = document.createElement('li');\n" +
+                    "            li.textContent = body.name + ' – Distanz: ' + (pos.distance ? pos.distance.fromEarth.km + ' km' : 'n/a');\n" +
+                    "            list.appendChild(li);\n" +
+                    "          });\n" +
+                    "        } else {\n" +
+                    "          list.innerHTML = '<li>Keine Planetendaten gefunden (Response-Struktur prüfen).</li>';\n" +
+                    "        }\n" +
+                    "      } catch (e) {\n" +
+                    "        list.innerHTML = '<li>Fehler beim Laden der Planetendaten: ' + e + '</li>';\n" +
+                    "      }\n" +
+                    "    }\n" +
+                    "\n" +
+                    "    // ---------------- Sonnensystem-Animation ----------------\n" +
+                    "    let t = 0;\n" +
+                    "    function draw() {\n" +
+                    "      const w = canvas.width / window.devicePixelRatio;\n" +
+                    "      const h = canvas.height / window.devicePixelRatio;\n" +
+                    "      ctx.clearRect(0, 0, w, h);\n" +
+                    "\n" +
+                    "      const cx = w / 2;\n" +
+                    "      const cy = h / 2;\n" +
+                    "\n" +
+                    "      // Hintergrund\n" +
+                    "      ctx.fillStyle = 'rgba(15,23,42,1)';\n" +
+                    "      ctx.fillRect(0, 0, w, h);\n" +
+                    "\n" +
+                    "      // Sonne\n" +
+                    "      const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, 26);\n" +
+                    "      gradient.addColorStop(0, '#facc15');\n" +
+                    "      gradient.addColorStop(1, '#f97316');\n" +
+                    "      ctx.fillStyle = gradient;\n" +
+                    "      ctx.beginPath();\n" +
+                    "      ctx.arc(cx, cy, 18, 0, Math.PI * 2);\n" +
+                    "      ctx.fill();\n" +
+                    "\n" +
+                    "      // Orbits & Planeten (Visualisierung basierend auf API-Daten)\n" +
+                    "      planets.forEach((p, index) => {\n" +
+                    "        ctx.strokeStyle = 'rgba(148,163,184,0.3)';\n" +
+                    "        ctx.lineWidth = 0.7;\n" +
+                    "        ctx.beginPath();\n" +
+                    "        ctx.arc(cx, cy, p.radius, 0, Math.PI * 2);\n" +
+                    "        ctx.stroke();\n" +
+                    "\n" +
+                    "        const angle = t * p.speed + index;\n" +
+                    "        const x = cx + Math.cos(angle) * p.radius;\n" +
+                    "        const y = cy + Math.sin(angle) * p.radius;\n" +
+                    "\n" +
+                    "        ctx.fillStyle = p.color;\n" +
+                    "        ctx.beginPath();\n" +
+                    "        ctx.arc(x, y, p.size, 0, Math.PI * 2);\n" +
+                    "        ctx.fill();\n" +
+                    "      });\n" +
+                    "\n" +
+                    "      t += 1;\n" +
+                    "      requestAnimationFrame(draw);\n" +
+                    "    }\n" +
+                    "\n" +
+                    "    loadPlanets();\n" +
+                    "    draw();\n" +
+                    "  </script>\n" +
+                    "</body>\n" +
+                    "</html>\n";
+        }
+    }
+
+    
+    static class JsonHandler implements HttpHandler {
+        private final String json;
+
+        public JsonHandler(String json) {
+            this.json = json;
+        }
+
+       
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        }
+    }
+
+    
+    static class AstronomyApiClient {
+        private final String appId;
+        private final String appSecret;
+        private final HttpClient httpClient = HttpClient.newHttpClient();
+        private String cachedToken;
+        private LocalDateTime tokenExpiry;
+
+        public AstronomyApiClient(String appId, String appSecret) {
+            this.appId = appId;
+            this.appSecret = appSecret;
+        }
+
+       
+        private String getJwtToken() throws Exception {
+            if (cachedToken != null && tokenExpiry != null && tokenExpiry.isAfter(LocalDateTime.now().plusMinutes(1))) {
+                return cachedToken;
+            }
+
+            String body = "{ \"applicationId\": \"" + appId + "\", \"applicationSecret\": \"" + appSecret + "\" }";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                  
+                    .uri(URI.create("https://api.astronomyapi.com/api/v2/tokens"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200 && response.statusCode() != 201) {
+                throw new RuntimeException("Token-Request fehlgeschlagen: HTTP " + response.statusCode() +
+                        " – " + response.body());
+            }
+
+           
+            String resp = response.body();
+           
+            String marker = "\"token\":\"";
+            int idx = resp.indexOf(marker);
+            if (idx < 0) {
+                throw new RuntimeException("Token nicht in Response gefunden: " + resp);
+            }
+            int start = idx + marker.length();
+            int end = resp.indexOf("\"", start);
+            String token = resp.substring(start, end);
+
+            cachedToken = token;
+           
+            tokenExpiry = LocalDateTime.now().plusHours(1);
+            return token;
+        }
+
+       
+        public String fetchPlanetPositions(double lat, double lon, double elevation) throws Exception {
+            String token = getJwtToken();
+
+            String fromDate = LocalDate.now().format(DateTimeFormatter.ISO_DATE);
+            String toDate = fromDate;
+
+            String url = "https://api.astronomyapi.com/api/v2/bodies/positions" +
+                    "?latitude=" + lat +
+                    "&longitude=" + lon +
+                    "&elevation=" + elevation +
+                    "&from_date=" + fromDate +
+                    "&to_date=" + toDate +
+                    "&time=00:00:00";
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Authorization", "Bearer " + token)
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Positions-Request fehlgeschlagen: HTTP " + response.statusCode() +
+                        " – " + response.body());
+            }
+            return response.body();
+        }
+    }
+}
